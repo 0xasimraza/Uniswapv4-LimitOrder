@@ -7,3 +7,6 @@
 [submodule "lib/standard3.0-contracts"]
 	path = lib/standard3.0-contracts
 	url = https://github.com/standardweb3/standard3.0-contracts
+[submodule "lib/v4-core"]
+	path = lib/v4-core
+	url = https://github.com/Uniswap/v4-core
