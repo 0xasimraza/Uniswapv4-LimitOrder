@@ -19,19 +19,25 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 // Our contracts
-import {TakeProfitsHook} from "../src/TakeProfitsHook.sol";
+import {V4OrderbookHook} from "../src/V4Orderbook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 
-contract TakeProfitsHookTest is Test, Deployers {
+contract V4OrderbookHookTest is Test, Deployers {
     // Use the libraries
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
+
+    // SQRT_RATIO_1_1 is the Q notation for sqrtPriceX96 where price = 1
+    // i.e. sqrt(1) * 2^96
+    // This is used as the initial price for the pool
+    // as we add equal amounts of token0 and token1 to the pool during setUp
+    uint160 constant SQRT_RATIO_1_1 = 79228162514264337593543950336;
 
     // The two currencies (tokens) from the pool
     Currency token0;
     Currency token1;
 
-    TakeProfitsHook hook;
+    V4OrderbookHook hook;
 
     function setUp() public {
         // Deploy v4 core contracts
@@ -48,10 +54,10 @@ contract TakeProfitsHookTest is Test, Deployers {
             address(this),
             flags,
             0,
-            type(TakeProfitsHook).creationCode,
+            type(V4OrderbookHook).creationCode,
             abi.encode(manager, "")
         );
-        hook = new TakeProfitsHook{salt: salt}(manager, "");
+        hook = new V4OrderbookHook{salt: salt}(manager, "");
 
         // Approve our hook address to spend these tokens as well
         MockERC20(Currency.unwrap(token0)).approve(
