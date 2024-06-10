@@ -29,6 +29,7 @@ contract TestPointsHook is Test, Deployers {
     PointsHook hook;
 
     function setUp() public {
+        // Deploy MatchingEngine 
         // Step 1 + 2
         // Deploy PoolManager and Router contracts
         deployFreshManagerAndRouters();
@@ -43,7 +44,7 @@ contract TestPointsHook is Test, Deployers {
 
         address hookAddress = address(uint160(Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_FLAG));
 
-        deployCodeTo("PointsHook.sol", abi.encode(manager, "Points Token", "TEST_POINTS"), hookAddress);
+        deployCodeTo("PointsHook.sol", abi.encode(manager, "Points Token", "TEST_POINTS", ), hookAddress);
         hook = PointsHook(hookAddress);
 
         // Approve our TOKEN for spending on the swap router and modify liquidity router
