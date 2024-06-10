@@ -18,6 +18,11 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {PointsHook} from "../src/PointsHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 
+import {MatchingEngine} from "@standardweb3/contracts/exchange/MatchingEngine.sol";
+import {OrderbookFactory} from "@standardweb3/contracts/exchange/orderbooks/OrderbookFactory.sol";
+
+import {WETH9} from "@standardweb3/contracts/mock/WETH9.sol";
+
 contract TestPointsHook is Test, Deployers {
     using CurrencyLibrary for Currency;
 
@@ -30,6 +35,20 @@ contract TestPointsHook is Test, Deployers {
 
     function setUp() public {
         // Deploy MatchingEngine 
+        OrderbookFactory orderbookFactory = new OrderbookFactory();
+        MatchingEngine matchingEngine = new MatchingEngine();
+        WETH9 weth = new WETH9();
+
+        
+        matchingEngine.initialize(
+            address(orderbookFactory),
+            address(0x34CCCa03631830cD8296c172bf3c31e126814ce9),
+            address(weth)
+        );
+        
+        orderbookFactory.initialize(address(matchingEngine));
+
+
         // Step 1 + 2
         // Deploy PoolManager and Router contracts
         deployFreshManagerAndRouters();
@@ -44,7 +63,7 @@ contract TestPointsHook is Test, Deployers {
 
         address hookAddress = address(uint160(Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_FLAG));
 
-        deployCodeTo("PointsHook.sol", abi.encode(manager, "Points Token", "TEST_POINTS", ), hookAddress);
+        deployCodeTo("PointsHook.sol", abi.encode(manager, "Points Token", "TEST_POINTS", address(matchingEngine)), hookAddress);
         hook = PointsHook(hookAddress);
 
         // Approve our TOKEN for spending on the swap router and modify liquidity router

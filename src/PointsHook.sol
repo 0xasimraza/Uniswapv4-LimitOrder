@@ -89,41 +89,6 @@ contract PointsHook is BaseHook, ERC20 {
         return (this.afterSwap.selector, 0);
     }
 
-
-
-    function afterSwap(
-        address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata swapParams,
-        BalanceDelta delta,
-        bytes calldata hookData
-    ) external override poolManagerOnly returns (bytes4, int128) {
-        // If this is not an ETH-TOKEN pool with this hook attached, ignore
-        if (!key.currency0.isNative()) return (this.afterSwap.selector, 0);
-
-        // We only mint points if user is buying TOKEN with ETH
-        if (!swapParams.zeroForOne) return (this.afterSwap.selector, 0);
-
-        // Mint points equal to 20% of the amount of ETH they spent
-        // Since its a zeroForOne swap:
-        // if amountSpecified < 0:
-        //      this is an "exact input for output" swap
-        //      amount of ETH they spent is equal to |amountSpecified|
-        // if amountSpecified > 0:
-        //      this is an "exact output for input" swap
-        //      amount of ETH they spent is equal to BalanceDelta.amount0()
-
-        uint256 ethSpendAmount = swapParams.amountSpecified < 0
-            ? uint256(-swapParams.amountSpecified)
-            : uint256(int256(-delta.amount0()));
-        uint256 pointsForSwap = ethSpendAmount / 5;
-
-        // Mint the points including any referral points
-        _assignPoints(hookData, pointsForSwap);
-
-        return (this.afterSwap.selector, 0);
-    }
-
     function afterAddLiquidity(
         address,
         PoolKey calldata key,
