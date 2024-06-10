@@ -17,7 +17,7 @@ import {IEngine} from "@standardweb3/contracts/exchange/interfaces/IEngine.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/erc20/IERC20.sol";
 
-contract PointsHook is BaseHook, ERC20 {
+contract V4OrderbookHook is BaseHook {
     using CurrencyLibrary for Currency;
     using BalanceDeltaLibrary for BalanceDelta;
     using BeforeSwapDeltaLibrary for BeforeSwapDelta;
@@ -31,11 +31,9 @@ contract PointsHook is BaseHook, ERC20 {
 
     constructor(
         IPoolManager _manager,
-        string memory _name,
-        string memory _symbol,
         address matchingEngine_,
         address weth_
-    ) BaseHook(_manager) ERC20(_name, _symbol, 18) {
+    ) BaseHook(_manager) {
         matchingEngine = matchingEngine_;
         weth = weth_;
     }
@@ -55,10 +53,10 @@ contract PointsHook is BaseHook, ERC20 {
                 afterAddLiquidity: false,
                 afterRemoveLiquidity: false,
                 beforeSwap: true,
-                afterSwap: true,
+                afterSwap: false,
                 beforeDonate: false,
                 afterDonate: false,
-                beforeSwapReturnDelta: false,
+                beforeSwapReturnDelta: true,
                 afterSwapReturnDelta: false,
                 afterAddLiquidityReturnDelta: false,
                 afterRemoveLiquidityReturnDelta: false
@@ -91,34 +89,20 @@ contract PointsHook is BaseHook, ERC20 {
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         // get original deltas
-        BeforeSwapDelta before = BeforeSwapDelta.wrap(swapParams.amountSpecified);
+        BeforeSwapDelta before = BeforeSwapDelta.wrap(
+            swapParams.amountSpecified
+        );
 
-        // TODO: add _limitOrder
         uint128 amount = _limitOrder(key, swapParams, hookData);
 
-        int128 afterOrder = before.getSpecifiedDelta() - int128(amount);
+        // TODO: setup delta after taking input fund from pool manager and settle
+        //int128 afterOrder = before.getSpecifiedDelta() - int128(amount);
 
-        BeforeSwapDelta delta = _toBeforeSwapDelta(
-            before.getSpecifiedDelta(),
-            afterOrder
+        return (
+            this.beforeSwap.selector,
+            _toBeforeSwapDelta(int128(amount), 0),
+            0
         );
-        return (this.beforeSwap.selector, delta, 0);
-    }
-
-    function afterSwap(
-        address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata swapParams,
-        BalanceDelta delta,
-        bytes calldata hookData
-    ) external override poolManagerOnly returns (bytes4, int128) {
-        // Mint the points including any referral points
-        //_assignPoints(hookData, pointsForSwap);
-        //uint128 amount = _limitOrder(key, swapParams.zeroForOne, hookData);
-        //_limitOrder(key, swapParams, hookData);
-        //_swapAndSettleBalances(key, swapParams, delta);
-
-        return (this.afterSwap.selector, 0);
     }
 
     function _limitOrder(
@@ -138,7 +122,7 @@ contract PointsHook is BaseHook, ERC20 {
 
         // TODO: check if amount is bigger than delta, if it is, return delta
         _take(
-            swapParams.zeroForOne ? key.currency1 : key.currency0,
+            swapParams.zeroForOne ? key.currency0 : key.currency1,
             uint128(amount)
         );
 
@@ -165,38 +149,6 @@ contract PointsHook is BaseHook, ERC20 {
         return abi.encode(limitPrice, amount, recipient, isMaker, n);
     }
 
-    function _swapAndSettleBalances(
-        PoolKey calldata key,
-        IPoolManager.SwapParams memory params,
-        BalanceDelta delta
-    ) internal returns (BalanceDelta) {
-        // If we just did a zeroForOne swap
-        // We need to send Token 0 to PM, and receive Token 1 from PM
-        if (params.zeroForOne) {
-            // Negative Value => Money leaving user's wallet
-            // Settle with PoolManager
-            if (delta.amount0() < 0) {
-                _settle(key.currency0, uint128(-delta.amount0()));
-            }
-
-            // Positive Value => Money coming into user's wallet
-            // Take from PM
-            if (delta.amount1() > 0) {
-                _take(key.currency1, uint128(delta.amount1()));
-            }
-        } else {
-            if (delta.amount1() < 0) {
-                _settle(key.currency1, uint128(-delta.amount1()));
-            }
-
-            if (delta.amount0() > 0) {
-                _take(key.currency0, uint128(delta.amount0()));
-            }
-        }
-
-        return delta;
-    }
-
     function _settle(Currency currency, uint128 amount) internal {
         // Transfer tokens to PM and let it know
         currency.transfer(address(poolManager), amount);
@@ -219,9 +171,20 @@ contract PointsHook is BaseHook, ERC20 {
         address recipient
     ) internal returns (uint256 total) {
         if (zeroForOne) {
-            IERC20(token1).approve(matchingEngine, amount);
+            if (token0 == address(0)) {
+                IEngine(payable(matchingEngine)).limitSellETH{value: amount}(
+                    token1,
+                    limitPrice,
+                    isMaker,
+                    n,
+                    0,
+                    recipient
+                );
+                return amount;
+            }
+            IERC20(token0).approve(matchingEngine, amount);
             (uint makePrice, uint placed, uint id) = IEngine(matchingEngine)
-                .limitBuy(
+                .limitSell(
                     token0 == address(0) ? weth : token0,
                     token1 == address(0) ? weth : token1,
                     limitPrice,
@@ -231,9 +194,21 @@ contract PointsHook is BaseHook, ERC20 {
                     0,
                     recipient
                 );
+            return amount;
         } else {
-            IERC20(token0).approve(matchingEngine, amount);
-            IEngine(matchingEngine).limitSell(
+            if (token1 == address(0)) {
+                IEngine(payable(matchingEngine)).limitBuyETH{value: amount}(
+                    token0,
+                    limitPrice,
+                    isMaker,
+                    n,
+                    0,
+                    recipient
+                );
+                return amount;
+            }
+            IERC20(token1).approve(matchingEngine, amount);
+            IEngine(matchingEngine).limitBuy(
                 token0 == address(0) ? weth : token0,
                 token1 == address(0) ? weth : token1,
                 limitPrice,
@@ -243,8 +218,11 @@ contract PointsHook is BaseHook, ERC20 {
                 0,
                 recipient
             );
+            return amount;
         }
+    }
 
-        return amount;
+    receive() external payable {
+        // You can add any custom logic here if needed
     }
 }

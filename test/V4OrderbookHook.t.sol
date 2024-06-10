@@ -15,7 +15,7 @@ import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 
-import {PointsHook} from "../src/PointsHook.sol";
+import {V4OrderbookHook} from "../src/V4OrderbookHook.sol";
 import {HookMiner} from "./utils/HookMiner.sol";
 
 import {MatchingEngine} from "@standardweb3/contracts/exchange/MatchingEngine.sol";
@@ -24,7 +24,7 @@ import {OrderbookFactory} from "@standardweb3/contracts/exchange/orderbooks/Orde
 import {WETH9} from "@standardweb3/contracts/mock/WETH9.sol";
 import {Utils} from "./utils/Utils.sol";
 
-contract TestPointsHook is Test, Deployers {
+contract TestV4OrderbookHook is Test, Deployers {
     using CurrencyLibrary for Currency;
 
     MockERC20 token;
@@ -32,7 +32,7 @@ contract TestPointsHook is Test, Deployers {
     Currency ethCurrency = Currency.wrap(address(0));
     Currency tokenCurrency;
 
-    PointsHook hook;
+    V4OrderbookHook hook;
 
     address public trader1;
     address[] public users;
@@ -69,21 +69,19 @@ contract TestPointsHook is Test, Deployers {
         token.mint(address(trader1), 1000 ether);
 
         address hookAddress = address(
-            uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG)
+            uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG)
         );
 
         deployCodeTo(
-            "PointsHook.sol",
+            "V4OrderbookHook.sol",
             abi.encode(
                 manager,
-                "Points Token",
-                "TEST_POINTS",
                 address(matchingEngine),
                 address(weth)
             ),
             hookAddress
         );
-        hook = PointsHook(hookAddress);
+        hook = V4OrderbookHook(payable(hookAddress));
 
         // Approve our TOKEN for spending on the swap router and modify liquidity router
         // These variables are coming from the `Deployers` contract
@@ -191,8 +189,6 @@ contract TestPointsHook is Test, Deployers {
             true,
             2
         );
-
-        uint256 pointsBalanceOriginal = hook.balanceOf(address(this));
 
         // How we landed on 0.003 ether here is based on computing value of x and y given
         // total value of delta L (liquidity delta) = 1 ether
