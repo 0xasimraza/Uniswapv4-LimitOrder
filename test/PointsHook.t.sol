@@ -22,6 +22,7 @@ import {MatchingEngine} from "@standardweb3/contracts/exchange/MatchingEngine.so
 import {OrderbookFactory} from "@standardweb3/contracts/exchange/orderbooks/OrderbookFactory.sol";
 
 import {WETH9} from "@standardweb3/contracts/mock/WETH9.sol";
+import {Utils} from "./utils/Utils.sol";
 
 contract TestPointsHook is Test, Deployers {
     using CurrencyLibrary for Currency;
@@ -33,23 +34,28 @@ contract TestPointsHook is Test, Deployers {
 
     PointsHook hook;
 
+    address public trader1;
+    address[] public users;
+
     function setUp() public {
-        // Deploy MatchingEngine 
+        Utils utils = new Utils();
+        users = utils.createUsers(4);
+        trader1 = users[0];
+        vm.label(trader1, "Trader 1");
+        // Step 1.
+        // Deploy MatchingEngine and connect
         OrderbookFactory orderbookFactory = new OrderbookFactory();
         MatchingEngine matchingEngine = new MatchingEngine();
         WETH9 weth = new WETH9();
 
-        
         matchingEngine.initialize(
             address(orderbookFactory),
             address(0x34CCCa03631830cD8296c172bf3c31e126814ce9),
             address(weth)
         );
-        
+
         orderbookFactory.initialize(address(matchingEngine));
-
-
-        // Step 1 + 2
+        // Step 2
         // Deploy PoolManager and Router contracts
         deployFreshManagerAndRouters();
 
@@ -60,16 +66,36 @@ contract TestPointsHook is Test, Deployers {
         // Mint a bunch of TOKEN to ourselves and to address(1)
         token.mint(address(this), 1000 ether);
         token.mint(address(1), 1000 ether);
+        token.mint(address(trader1), 1000 ether);
 
-        address hookAddress = address(uint160(Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_FLAG));
+        address hookAddress = address(
+            uint160(Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_FLAG)
+        );
 
-        deployCodeTo("PointsHook.sol", abi.encode(manager, "Points Token", "TEST_POINTS", address(matchingEngine)), hookAddress);
+        deployCodeTo(
+            "PointsHook.sol",
+            abi.encode(
+                manager,
+                "Points Token",
+                "TEST_POINTS",
+                address(matchingEngine),
+                address(weth)
+            ),
+            hookAddress
+        );
         hook = PointsHook(hookAddress);
 
         // Approve our TOKEN for spending on the swap router and modify liquidity router
         // These variables are coming from the `Deployers` contract
         token.approve(address(swapRouter), type(uint256).max);
         token.approve(address(modifyLiquidityRouter), type(uint256).max);
+        token.approve(address(matchingEngine), type(uint256).max);
+
+        vm.startPrank(trader1);
+        token.approve(address(swapRouter), type(uint256).max);
+        token.approve(address(modifyLiquidityRouter), type(uint256).max);
+        token.approve(address(matchingEngine), type(uint256).max);
+        vm.stopPrank();
 
         // Initialize a pool
         (key, ) = initPool(
@@ -79,6 +105,13 @@ contract TestPointsHook is Test, Deployers {
             3000, // Swap Fees
             SQRT_PRICE_1_1, // Initial Sqrt(P) value = 1
             ZERO_BYTES // No additional `initData`
+        );
+
+        // Initialize a pair in orderbook
+        matchingEngine.addPair(
+            address(weth),
+            Currency.unwrap(tokenCurrency),
+            2000e8
         );
     }
 
@@ -151,7 +184,13 @@ contract TestPointsHook is Test, Deployers {
 
     function test_addLiquidityAndSwap() public {
         // Set no referrer in the hook data
-        bytes memory hookData = hook.getHookData(address(0), address(this));
+        bytes memory hookData = hook.getHookData(
+            2000e8,
+            100000,
+            address(0x34CCCa03631830cD8296c172bf3c31e126814ce9),
+            true,
+            2
+        );
 
         uint256 pointsBalanceOriginal = hook.balanceOf(address(this));
 
@@ -165,27 +204,17 @@ contract TestPointsHook is Test, Deployers {
             IPoolManager.ModifyLiquidityParams({
                 tickLower: -60,
                 tickUpper: 60,
-                liquidityDelta: 1 ether, 
+                liquidityDelta: 1 ether,
                 salt: 0
             }),
             hookData
-        );
-        uint256 pointsBalanceAfterAddLiquidity = hook.balanceOf(address(this));
-
-        // The exact amount of ETH we're adding (x)
-        // is roughly 0.299535... ETH
-        // Our original POINTS balance was 0
-        // so after adding liquidity we should have roughly 0.299535... POINTS tokens
-        assertApproxEqAbs(
-            pointsBalanceAfterAddLiquidity - pointsBalanceOriginal,
-            2995354955910434,
-            0.0001 ether // error margin for precision loss
         );
 
         // Now we swap
         // We will swap 0.001 ether for tokens
         // We should get 20% of 0.001 * 10**18 points
         // = 2 * 10**14
+        vm.prank(trader1);
         swapRouter.swap{value: 0.001 ether}(
             key,
             IPoolManager.SwapParams({
@@ -193,21 +222,22 @@ contract TestPointsHook is Test, Deployers {
                 amountSpecified: -0.001 ether, // Exact input for output swap
                 sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
             }),
-            PoolSwapTest.TestSettings({takeClaims: true, settleUsingBurn: false}),
+            PoolSwapTest.TestSettings({
+                takeClaims: true,
+                settleUsingBurn: false
+            }),
             hookData
-        );
-        uint256 pointsBalanceAfterSwap = hook.balanceOf(address(this));
-        assertEq(
-            pointsBalanceAfterSwap - pointsBalanceAfterAddLiquidity,
-            2 * 10 ** 14
         );
     }
 
     function test_addLiquidityAndSwapWithReferral() public {
-        bytes memory hookData = hook.getHookData(address(1), address(this));
-
-        uint256 pointsBalanceOriginal = hook.balanceOf(address(this));
-        uint256 referrerPointsBalanceOriginal = hook.balanceOf(address(1));
+        bytes memory hookData = hook.getHookData(
+            2000e8,
+            100000,
+            address(this),
+            true,
+            2
+        );
 
         modifyLiquidityRouter.modifyLiquidity{value: 0.003 ether}(
             key,
@@ -220,29 +250,13 @@ contract TestPointsHook is Test, Deployers {
             hookData
         );
 
-        uint256 pointsBalanceAfterAddLiquidity = hook.balanceOf(address(this));
-        uint256 referrerPointsBalanceAfterAddLiquidity = hook.balanceOf(
-            address(1)
-        );
-
-        assertApproxEqAbs(
-            pointsBalanceAfterAddLiquidity - pointsBalanceOriginal,
-            2995354955910434,
-            0.00001 ether
-        );
-        assertApproxEqAbs(
-            referrerPointsBalanceAfterAddLiquidity -
-                referrerPointsBalanceOriginal -
-                hook.POINTS_FOR_REFERRAL(),
-            299535495591043,
-            0.000001 ether
-        );
 
         // Now we swap
         // We will swap 0.001 ether for tokens
         // We should get 20% of 0.001 * 10**18 points
         // = 2 * 10**14
         // Referrer should get 10% of that - so 2 * 10**13
+        vm.prank(trader1);
         swapRouter.swap{value: 0.001 ether}(
             key,
             IPoolManager.SwapParams({
@@ -250,20 +264,11 @@ contract TestPointsHook is Test, Deployers {
                 amountSpecified: -0.001 ether,
                 sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
             }),
-            PoolSwapTest.TestSettings({takeClaims: true, settleUsingBurn: false}),
+            PoolSwapTest.TestSettings({
+                takeClaims: true,
+                settleUsingBurn: false
+            }),
             hookData
-        );
-        uint256 pointsBalanceAfterSwap = hook.balanceOf(address(this));
-        uint256 referrerPointsBalanceAfterSwap = hook.balanceOf(address(1));
-
-        assertEq(
-            pointsBalanceAfterSwap - pointsBalanceAfterAddLiquidity,
-            2 * 10 ** 14
-        );
-        assertEq(
-            referrerPointsBalanceAfterSwap -
-                referrerPointsBalanceAfterAddLiquidity,
-            2 * 10 ** 13
         );
     }
 }

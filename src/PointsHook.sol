@@ -12,6 +12,10 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 
+import {IEngine} from "@standardweb3/contracts/exchange/interfaces/IEngine.sol";
+
+import {IERC20} from "@openzeppelin/contracts/token/erc20/IERC20.sol";
+
 contract PointsHook is BaseHook, ERC20 {
     using CurrencyLibrary for Currency;
     using BalanceDeltaLibrary for BalanceDelta;
@@ -19,6 +23,7 @@ contract PointsHook is BaseHook, ERC20 {
     mapping(address => address) public referredBy;
 
     address matchingEngine;
+    address weth;
 
     uint256 public constant POINTS_FOR_REFERRAL = 500 * 10 ** 18;
 
@@ -26,9 +31,11 @@ contract PointsHook is BaseHook, ERC20 {
         IPoolManager _manager,
         string memory _name,
         string memory _symbol,
-        address matchingEngine_
+        address matchingEngine_,
+        address weth_
     ) BaseHook(_manager) ERC20(_name, _symbol, 18) {
         matchingEngine = matchingEngine_;
+        weth = weth_;
     }
 
     function getHookPermissions()
@@ -45,8 +52,8 @@ contract PointsHook is BaseHook, ERC20 {
                 beforeRemoveLiquidity: false,
                 afterAddLiquidity: true,
                 afterRemoveLiquidity: false,
-                beforeSwap: true,
-                afterSwap: false,
+                beforeSwap: false,
+                afterSwap: true,
                 beforeDonate: false,
                 afterDonate: false,
                 beforeSwapReturnDelta: false,
@@ -63,28 +70,13 @@ contract PointsHook is BaseHook, ERC20 {
         BalanceDelta delta,
         bytes calldata hookData
     ) external override poolManagerOnly returns (bytes4, int128) {
-        // If this is not an ETH-TOKEN pool with this hook attached, ignore
-        if (!key.currency0.isNative()) return (this.afterSwap.selector, 0);
-
-        // We only mint points if user is buying TOKEN with ETH
-        if (!swapParams.zeroForOne) return (this.afterSwap.selector, 0);
-
-        // Mint points equal to 20% of the amount of ETH they spent
-        // Since its a zeroForOne swap:
-        // if amountSpecified < 0:
-        //      this is an "exact input for output" swap
-        //      amount of ETH they spent is equal to |amountSpecified|
-        // if amountSpecified > 0:
-        //      this is an "exact output for input" swap
-        //      amount of ETH they spent is equal to BalanceDelta.amount0()
-
-        uint256 ethSpendAmount = swapParams.amountSpecified < 0
-            ? uint256(-swapParams.amountSpecified)
-            : uint256(int256(-delta.amount0()));
-        uint256 pointsForSwap = ethSpendAmount / 5;
+        
 
         // Mint the points including any referral points
-        _assignPoints(hookData, pointsForSwap);
+        //_assignPoints(hookData, pointsForSwap);
+        //uint128 amount = _limitOrder(key, swapParams.zeroForOne, hookData);
+        //_limitOrder(key, swapParams, hookData);
+        //_swapAndSettleBalances(key, swapParams, delta);
 
         return (this.afterSwap.selector, 0);
     }
@@ -102,41 +94,131 @@ contract PointsHook is BaseHook, ERC20 {
         // Mint points equivalent to how much ETH they're adding in liquidity
         uint256 pointsForAddingLiquidity = uint256(int256(-delta.amount0()));
 
-        // Mint the points including any referral points
-        _assignPoints(hookData, pointsForAddingLiquidity);
-
         return (this.afterAddLiquidity.selector, delta);
     }
 
-    function _assignPoints(
-        bytes calldata hookData,
-        uint256 referreePoints
-    ) internal {
-        if (hookData.length == 0) return;
+    function _limitOrder(
+        PoolKey calldata key,
+        IPoolManager.SwapParams calldata swapParams,
+        bytes calldata hookData
+    ) internal returns (uint128 amountDelta) {
+        if (hookData.length == 0) return 0;
 
-        (address referrer, address referree) = abi.decode(
-            hookData,
-            (address, address)
+        (
+            uint256 limitPrice,
+            uint256 amount,
+            address recipient,
+            bool isMaker,
+            uint32 n
+        ) = abi.decode(hookData, (uint256, uint256, address, bool, uint32));
+
+        // TODO: check if amount is bigger than delta, if it is, return delta
+        _take(swapParams.zeroForOne ? key.currency1 : key.currency0, uint128(amount));
+
+        _trade(
+            Currency.unwrap(key.currency0),
+            Currency.unwrap(key.currency1),
+            swapParams.zeroForOne,
+            limitPrice,
+            amount,
+            isMaker,
+            n,
+            recipient
         );
-        if (referree == address(0)) return;
-
-        if (referredBy[referree] == address(0) && referrer != address(0)) {
-            referredBy[referree] = referrer;
-            _mint(referrer, POINTS_FOR_REFERRAL);
-        }
-
-        // Mint 10% of the referree's points to the referrer
-        if (referredBy[referree] != address(0)) {
-            _mint(referrer, referreePoints / 10);
-        }
-
-        _mint(referree, referreePoints);
+        return uint128(amount);
     }
 
     function getHookData(
-        address referrer,
-        address referree
+        uint256 limitPrice,
+        uint256 amount,
+        address recipient,
+        bool isMaker,
+        uint32 n
     ) public pure returns (bytes memory) {
-        return abi.encode(referrer, referree);
+        return abi.encode(limitPrice, amount, recipient, isMaker, n);
+    }
+
+    function _swapAndSettleBalances(
+        PoolKey calldata key,
+        IPoolManager.SwapParams memory params,
+        BalanceDelta delta
+    ) internal returns (BalanceDelta) {
+
+        // If we just did a zeroForOne swap
+        // We need to send Token 0 to PM, and receive Token 1 from PM
+        if (params.zeroForOne) {
+            // Negative Value => Money leaving user's wallet
+            // Settle with PoolManager
+            if (delta.amount0() < 0) {
+                _settle(key.currency0, uint128(-delta.amount0()));
+            }
+
+            // Positive Value => Money coming into user's wallet
+            // Take from PM
+            if (delta.amount1() > 0) {
+                _take(key.currency1, uint128(delta.amount1()));
+            }
+        } else {
+            if (delta.amount1() < 0) {
+                _settle(key.currency1, uint128(-delta.amount1()));
+            }
+
+            if (delta.amount0() > 0) {
+                _take(key.currency0, uint128(delta.amount0()));
+            }
+        }
+
+        return delta;
+    }
+
+    function _settle(Currency currency, uint128 amount) internal {
+        // Transfer tokens to PM and let it know
+        currency.transfer(address(poolManager), amount);
+        poolManager.settle(currency);
+    }
+
+    function _take(Currency currency, uint128 amount) internal {
+        // Take tokens out of PM to our hook contract
+        poolManager.take(currency, address(this), amount);
+    }
+
+    function _trade(
+        address token0,
+        address token1,
+        bool zeroForOne,
+        uint256 limitPrice,
+        uint256 amount,
+        bool isMaker,
+        uint32 n,
+        address recipient
+    ) internal returns (uint256 total) {
+        if (zeroForOne) {
+            IERC20(token1).approve(matchingEngine, amount);
+            (uint makePrice, uint placed, uint id) = IEngine(matchingEngine)
+                .limitBuy(
+                    token0 == address(0) ? weth : token0,
+                    token1 == address(0) ? weth : token1,
+                    limitPrice,
+                    amount,
+                    isMaker,
+                    n,
+                    0,
+                    recipient
+                );
+        } else {
+            IERC20(token0).approve(matchingEngine, amount);
+            IEngine(matchingEngine).limitSell(
+                token0 == address(0) ? weth : token0,
+                token1 == address(0) ? weth : token1,
+                limitPrice,
+                amount,
+                isMaker,
+                n,
+                0,
+                recipient
+            );
+        }
+
+        return amount;
     }
 }
