@@ -7,6 +7,7 @@ import {ERC20} from "solmate/tokens/ERC20.sol";
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {BalanceDeltaLibrary, BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {BeforeSwapDeltaLibrary, BeforeSwapDelta} from "v4-core/types/BeforeSwapDelta.sol";
 
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 
@@ -19,6 +20,7 @@ import {IERC20} from "@openzeppelin/contracts/token/erc20/IERC20.sol";
 contract PointsHook is BaseHook, ERC20 {
     using CurrencyLibrary for Currency;
     using BalanceDeltaLibrary for BalanceDelta;
+    using BeforeSwapDeltaLibrary for BeforeSwapDelta;
 
     mapping(address => address) public referredBy;
 
@@ -50,9 +52,9 @@ contract PointsHook is BaseHook, ERC20 {
                 afterInitialize: false,
                 beforeAddLiquidity: false,
                 beforeRemoveLiquidity: false,
-                afterAddLiquidity: true,
+                afterAddLiquidity: false,
                 afterRemoveLiquidity: false,
-                beforeSwap: false,
+                beforeSwap: true,
                 afterSwap: true,
                 beforeDonate: false,
                 afterDonate: false,
@@ -63,6 +65,46 @@ contract PointsHook is BaseHook, ERC20 {
             });
     }
 
+    // Creates a BeforeSwapDelta from specified and unspecified
+    function _toBeforeSwapDelta(
+        int128 deltaSpecified,
+        int128 deltaUnspecified
+    ) internal pure returns (BeforeSwapDelta beforeSwapDelta) {
+        /// @solidity memory-safe-assembly
+        assembly {
+            beforeSwapDelta := or(
+                shl(128, deltaSpecified),
+                and(sub(shl(128, 1), 1), deltaUnspecified)
+            )
+        }
+    }
+
+    function beforeSwap(
+        address,
+        PoolKey calldata key,
+        IPoolManager.SwapParams calldata swapParams,
+        bytes calldata hookData
+    )
+        external
+        override
+        poolManagerOnly
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
+        // get original deltas
+        BeforeSwapDelta before = BeforeSwapDelta.wrap(swapParams.amountSpecified);
+
+        // TODO: add _limitOrder
+        uint128 amount = _limitOrder(key, swapParams, hookData);
+
+        int128 afterOrder = before.getSpecifiedDelta() - int128(amount);
+
+        BeforeSwapDelta delta = _toBeforeSwapDelta(
+            before.getSpecifiedDelta(),
+            afterOrder
+        );
+        return (this.beforeSwap.selector, delta, 0);
+    }
+
     function afterSwap(
         address,
         PoolKey calldata key,
@@ -70,8 +112,6 @@ contract PointsHook is BaseHook, ERC20 {
         BalanceDelta delta,
         bytes calldata hookData
     ) external override poolManagerOnly returns (bytes4, int128) {
-        
-
         // Mint the points including any referral points
         //_assignPoints(hookData, pointsForSwap);
         //uint128 amount = _limitOrder(key, swapParams.zeroForOne, hookData);
@@ -79,22 +119,6 @@ contract PointsHook is BaseHook, ERC20 {
         //_swapAndSettleBalances(key, swapParams, delta);
 
         return (this.afterSwap.selector, 0);
-    }
-
-    function afterAddLiquidity(
-        address,
-        PoolKey calldata key,
-        IPoolManager.ModifyLiquidityParams calldata,
-        BalanceDelta delta,
-        bytes calldata hookData
-    ) external override poolManagerOnly returns (bytes4, BalanceDelta) {
-        // If this is not an ETH-TOKEN pool with this hook attached, ignore
-        if (!key.currency0.isNative()) return (this.afterSwap.selector, delta);
-
-        // Mint points equivalent to how much ETH they're adding in liquidity
-        uint256 pointsForAddingLiquidity = uint256(int256(-delta.amount0()));
-
-        return (this.afterAddLiquidity.selector, delta);
     }
 
     function _limitOrder(
@@ -113,7 +137,10 @@ contract PointsHook is BaseHook, ERC20 {
         ) = abi.decode(hookData, (uint256, uint256, address, bool, uint32));
 
         // TODO: check if amount is bigger than delta, if it is, return delta
-        _take(swapParams.zeroForOne ? key.currency1 : key.currency0, uint128(amount));
+        _take(
+            swapParams.zeroForOne ? key.currency1 : key.currency0,
+            uint128(amount)
+        );
 
         _trade(
             Currency.unwrap(key.currency0),
@@ -143,7 +170,6 @@ contract PointsHook is BaseHook, ERC20 {
         IPoolManager.SwapParams memory params,
         BalanceDelta delta
     ) internal returns (BalanceDelta) {
-
         // If we just did a zeroForOne swap
         // We need to send Token 0 to PM, and receive Token 1 from PM
         if (params.zeroForOne) {

@@ -69,7 +69,7 @@ contract TestPointsHook is Test, Deployers {
         token.mint(address(trader1), 1000 ether);
 
         address hookAddress = address(
-            uint160(Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_FLAG)
+            uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG)
         );
 
         deployCodeTo(
