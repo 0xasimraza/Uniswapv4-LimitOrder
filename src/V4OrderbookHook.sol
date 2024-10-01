@@ -15,7 +15,7 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
 
 import {IEngine} from "@standardweb3/contracts/exchange/interfaces/IEngine.sol";
 
-import {IERC20} from "@openzeppelin/contracts/token/erc20/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract V4OrderbookHook is BaseHook {
     using CurrencyLibrary for Currency;
@@ -29,51 +29,39 @@ contract V4OrderbookHook is BaseHook {
 
     uint256 public constant POINTS_FOR_REFERRAL = 500 * 10 ** 18;
 
-    constructor(
-        IPoolManager _manager,
-        address matchingEngine_,
-        address weth_
-    ) BaseHook(_manager) {
+    constructor(IPoolManager _manager, address matchingEngine_, address weth_) BaseHook(_manager) {
         matchingEngine = matchingEngine_;
         weth = weth_;
     }
 
-    function getHookPermissions()
-        public
-        pure
-        override
-        returns (Hooks.Permissions memory)
-    {
-        return
-            Hooks.Permissions({
-                beforeInitialize: false,
-                afterInitialize: false,
-                beforeAddLiquidity: false,
-                beforeRemoveLiquidity: false,
-                afterAddLiquidity: false,
-                afterRemoveLiquidity: false,
-                beforeSwap: true,
-                afterSwap: false,
-                beforeDonate: false,
-                afterDonate: false,
-                beforeSwapReturnDelta: true,
-                afterSwapReturnDelta: false,
-                afterAddLiquidityReturnDelta: false,
-                afterRemoveLiquidityReturnDelta: false
-            });
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return Hooks.Permissions({
+            beforeInitialize: false,
+            afterInitialize: false,
+            beforeAddLiquidity: false,
+            beforeRemoveLiquidity: false,
+            afterAddLiquidity: false,
+            afterRemoveLiquidity: false,
+            beforeSwap: true,
+            afterSwap: false,
+            beforeDonate: false,
+            afterDonate: false,
+            beforeSwapReturnDelta: true,
+            afterSwapReturnDelta: false,
+            afterAddLiquidityReturnDelta: false,
+            afterRemoveLiquidityReturnDelta: false
+        });
     }
 
     // Creates a BeforeSwapDelta from specified and unspecified
-    function _toBeforeSwapDelta(
-        int128 deltaSpecified,
-        int128 deltaUnspecified
-    ) internal pure returns (BeforeSwapDelta beforeSwapDelta) {
+    function _toBeforeSwapDelta(int128 deltaSpecified, int128 deltaUnspecified)
+        internal
+        pure
+        returns (BeforeSwapDelta beforeSwapDelta)
+    {
         /// @solidity memory-safe-assembly
         assembly {
-            beforeSwapDelta := or(
-                shl(128, deltaSpecified),
-                and(sub(shl(128, 1), 1), deltaUnspecified)
-            )
+            beforeSwapDelta := or(shl(128, deltaSpecified), and(sub(shl(128, 1), 1), deltaUnspecified))
         }
     }
 
@@ -82,49 +70,29 @@ contract V4OrderbookHook is BaseHook {
         PoolKey calldata key,
         IPoolManager.SwapParams calldata swapParams,
         bytes calldata hookData
-    )
-        external
-        override
-        poolManagerOnly
-        returns (bytes4, BeforeSwapDelta, uint24)
-    {
+    ) external override poolManagerOnly returns (bytes4, BeforeSwapDelta, uint24) {
         // get original deltas
-        BeforeSwapDelta before = BeforeSwapDelta.wrap(
-            swapParams.amountSpecified
-        );
+        BeforeSwapDelta before = BeforeSwapDelta.wrap(swapParams.amountSpecified);
 
         uint128 amount = _limitOrder(key, swapParams, hookData);
 
         // TODO: setup delta after taking input fund from pool manager and settle
         //int128 afterOrder = before.getSpecifiedDelta() - int128(amount);
 
-        return (
-            this.beforeSwap.selector,
-            _toBeforeSwapDelta(int128(amount), 0),
-            0
-        );
+        return (this.beforeSwap.selector, _toBeforeSwapDelta(int128(amount), 0), 0);
     }
 
-    function _limitOrder(
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata swapParams,
-        bytes calldata hookData
-    ) internal returns (uint128 amountDelta) {
+    function _limitOrder(PoolKey calldata key, IPoolManager.SwapParams calldata swapParams, bytes calldata hookData)
+        internal
+        returns (uint128 amountDelta)
+    {
         if (hookData.length == 0) return 0;
 
-        (
-            uint256 limitPrice,
-            uint256 amount,
-            address recipient,
-            bool isMaker,
-            uint32 n
-        ) = abi.decode(hookData, (uint256, uint256, address, bool, uint32));
+        (uint256 limitPrice, uint256 amount, address recipient, bool isMaker, uint32 n) =
+            abi.decode(hookData, (uint256, uint256, address, bool, uint32));
 
         // TODO: check if amount is bigger than delta, if it is, return delta
-        _take(
-            swapParams.zeroForOne ? key.currency0 : key.currency1,
-            uint128(amount)
-        );
+        _take(swapParams.zeroForOne ? key.currency0 : key.currency1, uint128(amount));
 
         _trade(
             Currency.unwrap(key.currency0),
@@ -139,13 +107,11 @@ contract V4OrderbookHook is BaseHook {
         return uint128(amount);
     }
 
-    function getHookData(
-        uint256 limitPrice,
-        uint256 amount,
-        address recipient,
-        bool isMaker,
-        uint32 n
-    ) public pure returns (bytes memory) {
+    function getHookData(uint256 limitPrice, uint256 amount, address recipient, bool isMaker, uint32 n)
+        public
+        pure
+        returns (bytes memory)
+    {
         return abi.encode(limitPrice, amount, recipient, isMaker, n);
     }
 
@@ -173,37 +139,27 @@ contract V4OrderbookHook is BaseHook {
         if (zeroForOne) {
             if (token0 == address(0)) {
                 IEngine(payable(matchingEngine)).limitSellETH{value: amount}(
-                    token1,
-                    limitPrice,
-                    isMaker,
-                    n,
-                    0,
-                    recipient
+                    token1, limitPrice, isMaker, n, 0, recipient
                 );
                 return amount;
             }
             IERC20(token0).approve(matchingEngine, amount);
-            (uint makePrice, uint placed, uint id) = IEngine(matchingEngine)
-                .limitSell(
-                    token0 == address(0) ? weth : token0,
-                    token1 == address(0) ? weth : token1,
-                    limitPrice,
-                    amount,
-                    isMaker,
-                    n,
-                    0,
-                    recipient
-                );
+            (uint256 makePrice, uint256 placed, uint256 id) = IEngine(matchingEngine).limitSell(
+                token0 == address(0) ? weth : token0,
+                token1 == address(0) ? weth : token1,
+                limitPrice,
+                amount,
+                isMaker,
+                n,
+                0
+            );
+            // recipient
+
             return amount;
         } else {
             if (token1 == address(0)) {
                 IEngine(payable(matchingEngine)).limitBuyETH{value: amount}(
-                    token0,
-                    limitPrice,
-                    isMaker,
-                    n,
-                    0,
-                    recipient
+                    token0, limitPrice, isMaker, n, 0, recipient
                 );
                 return amount;
             }
@@ -215,9 +171,10 @@ contract V4OrderbookHook is BaseHook {
                 amount,
                 isMaker,
                 n,
-                0,
-                recipient
+                0
             );
+            // recipient
+
             return amount;
         }
     }
